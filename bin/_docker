@@ -4,6 +4,7 @@ use strict;
 use warnings;
 use Cwd 'cwd';
 use File::Find;
+use YAML::XS ();
 
 use FindBin '$Bin';
 
@@ -61,8 +62,73 @@ if (join(' ', @ARGV) !~ m/(?:-p|--project-name) \S+/) {
     push @enabled, '--project-name' => (cwd =~ m{.*\/(.*)});
 }
 
-my @cmd = ( 'docker-compose', @enabled, @ARGV );
+my @cmd = ( 'docker-compose', @enabled );
+
+if ( grep { /build/ } @ARGV ) {
+    my $config = qx{@cmd config};
+
+    $config = eval { YAML::XS::Load($config) } // {};
+
+    _build_from_snapshot($config->{services}{web}{image});
+}
+
+push @cmd, @ARGV;
 
 printf ">>> %s\n", join ' ', @cmd if $ENV{VERBOSE};
 
 exec @cmd;
+
+sub _build_from_snapshot {
+    my ($name) = @_ or return;
+
+    my $found = qx{docker images | grep $name};
+
+    my $feature = "$name-image.yml";
+
+    if (!$found) {
+        unlink ".enabled/$feature";
+        open my $fh, '>', ".enabled/perl-base.yml";
+        push @cmd, -f => "src/plugins/perl-base/docker-compose/perl-base.yml";
+        return;
+    }
+
+    mkdir 'Dockerfiles';
+
+    if (!-f 'Dockerfiles/Dockerfile') {
+        open my $read, '<', 'src/plugins/perl-base/Dockerfiles/Dockerfile';
+        open my $write, '>', 'Dockerfiles/Dockerfile';
+        while (my $line = <$read>) {
+            if ($line =~ m/^FROM perl/) {
+                print $write "FROM $name:latest\n";
+            }
+            else {
+                print $write $line;
+            }
+        }
+    }
+
+    mkdir 'docker-compose';
+
+    my $my_docker_compose = "docker-compose/$feature";
+
+    if ( !-f $my_docker_compose ) {
+        open my $fh, '>', $my_docker_compose;
+        print $fh YAML::XS::Dump(
+            {
+                version  => '3.7',
+                services => {
+                    web => {
+                        build => {
+                            context => '..',
+                            dockerfile => 'Dockerfiles/Dockerfile'
+                        },
+                    },
+                },
+            }
+        );
+    }
+
+    unlink ".enabled/perl-base.yml";
+    open my $fh, '>', ".enabled/$feature";;
+    push @cmd, -f => $my_docker_compose;
+}
