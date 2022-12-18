@@ -5,6 +5,9 @@ use warnings;
 use Cwd 'cwd';
 use File::Find;
 use YAML::XS ();
+use Env qw( BUILDKIT_PROGRESS DOCKER_BUILDKIT );
+
+$BUILDKIT_PROGRESS = 'plain';
 
 use FindBin '$Bin';
 
@@ -54,6 +57,13 @@ if ( grep { /--list/ } @ARGV ) {
     exit;
 }
 
+my $build_from_scratch = 0;
+
+if ( grep { /--build-from-scratch/ } @ARGV ) {
+    @ARGV = grep { !/--build-from-scratch/ } @ARGV;
+    $build_from_scratch = 1;
+}
+
 my @enabled = map { -f => $features{$_} }
   sort { $enabled{$a} <=> $enabled{$b} }
   grep { exists $enabled{$_} } keys %features;
@@ -85,7 +95,7 @@ sub _build_from_snapshot {
 
     my $feature = "$name-image.yml";
 
-    if (!$found) {
+    if (!$found || $build_from_scratch) {
         unlink ".enabled/$feature";
         open my $fh, '>', ".enabled/perl-base.yml";
         push @cmd, -f => "src/plugins/perl-base/docker-compose/perl-base.yml";
